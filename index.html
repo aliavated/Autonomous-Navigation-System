@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Autonomous Navigation System</title>
+
+<style>
+body {
+  margin:0;
+  font-family:sans-serif;
+  color:#e5e7eb;
+  text-align:center;
+
+  /* just the animated background sky thing */
+  background: linear-gradient(-45deg, #0b1220, #1e3a8a, #0f172a, #312e81);
+  background-size: 400% 400%;
+  animation: sky 12s ease infinite;
+}
+
+@keyframes sky {
+  0% {background-position:0% 50%;}
+  50% {background-position:100% 50%;}
+  100% {background-position:0% 50%;}
+}
+
+
+/* buttons for controls */
+button {
+  margin:5px;
+  padding:10px 14px;
+  border:none;
+  border-radius:8px;
+  cursor:pointer;
+}
+
+/* grid layout for map */
+#grid {
+  display:grid;
+  grid-template-columns: repeat(20, 25px);
+  gap:2px;
+  justify-content:center;
+  margin-top:20px;
+}
+
+/* each cell in grid */
+.cell {
+  width:25px;
+  height:25px;
+  cursor:pointer;
+  transition:0.2s;
+  position:relative;
+}
+
+/* terrain types */
+.water { background: linear-gradient(to bottom, #0f3d91, #2563eb); }
+.land { background: linear-gradient(to bottom, #15803d, #22c55e); }
+.mountain { background: linear-gradient(to bottom, #374151, #9ca3af); }
+
+/* start and end nodes */
+.start { background: yellow !important; }
+.end { background: red !important; }
+
+/* blue spread effect */
+.visited {
+  background: radial-gradient(circle at center, #60a5fa 0%, #2563eb 60%, #0f172a 100%) !important;
+  animation: waveSpread 0.4s ease;
+}
+
+@keyframes waveSpread {
+  0% { transform: scale(0.6); opacity:0.6; }
+  100% { transform: scale(1); opacity:1; }
+}
+
+/* final path highlight */
+.path {
+  background:white !important;
+  box-shadow: 0 0 10px rgba(255,255,255,0.7);
+}
+
+/* plane icon */
+.plane {
+  position:absolute;
+  font-size:18px;
+  z-index:1000;
+  transition:0.15s linear;
+  pointer-events:none;
+}
+
+/* smoke trail effect */
+.smoke {
+  position:absolute;
+  width:6px;
+  height:6px;
+  background:rgba(200,200,200,0.6);
+  border-radius:50%;
+  pointer-events:none;
+  animation: fadeSmoke 0.8s linear forwards;
+}
+
+@keyframes fadeSmoke {
+  0% {opacity:1; transform:scale(1);}
+  100% {opacity:0; transform:scale(2);}
+}
+
+/* radar pulse effect */
+.radar {
+  position:absolute;
+  width:30px;
+  height:30px;
+  border:2px solid rgba(0,255,255,0.6);
+  border-radius:50%;
+  animation: radarWave 0.8s linear forwards;
+  pointer-events:none;
+}
+
+@keyframes radarWave {
+  0% {transform:scale(0.5); opacity:0.8;}
+  100% {transform:scale(2.5); opacity:0;}
+}
+
+/* dark overlay for processing screen */
+#overlay {
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:rgba(0,0,0,0.35);
+  z-index:9000;
+  opacity:0;
+  pointer-events:none;
+  transition:0.2s ease;
+}
+
+#overlay.show {
+  opacity:1;
+  pointer-events:auto;
+}
+
+/* processing box in center */
+#processBox {
+  position:fixed;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%) scale(0.95);
+  width:340px;
+  padding:25px;
+  background:rgba(10,15,30,0.95);
+  border-radius:14px;
+  z-index:10000;
+  opacity:0;
+  pointer-events:none;
+  transition:0.2s ease;
+}
+
+#processBox.show {
+  opacity:1;
+  transform:translate(-50%,-50%) scale(1);
+  pointer-events:auto;
+}
+
+/* loading bar */
+#bar {
+  width:100%;
+  height:10px;
+  background:#111827;
+  border-radius:6px;
+  overflow:hidden;
+  margin-top:10px;
+}
+
+/* fill animation */
+#fill {
+  width:0%;
+  height:100%;
+  background:limegreen;
+  transition: width 0.016s linear;
+}
+
+/* final text after loading */
+#finalText {
+  margin-top:10px;
+  opacity:0;
+  transition:0.3s ease;
+}
+
+/* status text at bottom */
+#status {
+  margin-top:15px;
+  opacity:0.85;
+}
+</style>
+</head>
+
+<body>
+
+<h2>Autonomous Navigation Simulation</h2>
+
+<!-- controls -->
+<button onclick="setMode('start')">Start Node</button>
+<button onclick="setMode('end')">End Node</button>
+<button onclick="setMode('wall')">Obstacle</button>
+<button onclick="generate()">Generate Terrain</button>
+<button onclick="run()">Run</button>
+
+<!-- grid container -->
+<div id="grid"></div>
+
+<p id="status">Initialize system...</p>
+
+<!-- overlay + process UI -->
+<div id="overlay"></div>
+
+<div id="processBox">
+  <div>Processing</div>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="finalText">Processing Complete</div>
+</div>
+
+<!-- audio completion -->
+<audio id="audioDone">
+  <source src="https://files.catbox.moe/01nefb.mp3" type="audio/mpeg">
+</audio>
+
+<script>
+
+/* unlock audio */
+document.addEventListener("click", () => {
+  let a = document.getElementById("audioDone");
+  a.load();
+}, { once:true });
+
+/* main variables */
+let size=20;
+let grid=[]; // stores map data
+let start=null;
+let end=null;
+let mode="wall";
+
+let plane=null;
+let running=false;
+
+/* resets everything after run */
+function resetAll(){
+  if(plane){plane.remove();plane=null;}
+  document.querySelectorAll(".smoke,.radar").forEach(e=>e.remove());
+
+  document.getElementById("overlay").classList.remove("show");
+  document.getElementById("processBox").classList.remove("show");
+
+  document.getElementById("fill").style.width="0%";
+  document.getElementById("finalText").style.opacity=0;
+
+  running=false;
+}
+
+/* generates random terrain */
+function generate(){
+  resetAll();
+  grid=[]; start=null; end=null;
+
+  document.getElementById("status").innerText="Initialize system...";
+  document.getElementById("grid").innerHTML="";
+
+  for(let i=0;i<size;i++){
+    grid[i]=[];
+
+    for(let j=0;j<size;j++){
+      let r=Math.random();
+      let type=r<0.2?"water":r<0.7?"land":"mountain";
+
+      grid[i][j]=type;
+
+      let cell=document.createElement("div");
+      cell.className="cell "+type;
+      cell.dataset.r=i;
+      cell.dataset.c=j;
+
+      cell.onclick=()=>place(cell);
+
+      document.getElementById("grid").appendChild(cell);
+    }
+  }
+}
+
+/* sets placement mode */
+function setMode(m){mode=m;}
+
+/* place start, end or obstacle */
+function place(cell){
+  let r=+cell.dataset.r;
+  let c=+cell.dataset.c;
+
+  if(mode==="start"){start=[r,c];cell.className="cell start";}
+  if(mode==="end"){end=[r,c];cell.className="cell end";}
+  if(mode==="wall"){grid[r][c]="mountain";cell.className="cell mountain";}
+}
+
+/* BFS pathfinding (traversal algorithm) */
+function run(){
+  if(running) return;
+  if(!start||!end) return;
+  running=true;
+
+  document.getElementById("status").innerText="Running simulation...";
+
+  let queue=[start];
+  let visited={[start]:true};
+  let parent={};
+
+  let dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+
+  function step(){
+
+    if(queue.length===0){
+      document.getElementById("status").innerText="No route detected";
+      running=false;
+      return;
+    }
+
+    let [r,c]=queue.shift();
+    let cell=document.querySelector(`[data-r='${r}'][data-c='${c}']`);
+
+    if(cell && !cell.classList.contains("start")&&!cell.classList.contains("end")){
+      cell.classList.add("visited");
+    }
+
+    if(r===end[0]&&c===end[1]){
+      draw(parent, 140);
+      return;
+    }
+
+    for(let d of dirs){
+      let nr=r+d[0], nc=c+d[1];
+
+      if(nr>=0&&nc>=0&&nr<size&&nc<size&&!visited[[nr,nc]]&&grid[nr][nc]!=="mountain"){
+        visited[[nr,nc]]=true;
+        parent[[nr,nc]]=[r,c];
+        queue.push([nr,nc]);
+      }
+    }
+
+    setTimeout(step,10);
+  }
+
+  step();
+}
+
+/* draws path and moves plane */
+function draw(parent, speed){
+
+  let cur=end;
+  let path=[];
+
+  while(cur){path.push(cur);cur=parent[cur];}
+  path.reverse();
+
+  let i=0;
+
+  plane=document.createElement("div");
+  plane.className="plane";
+  plane.innerHTML="✈️";
+  document.body.appendChild(plane);
+
+  function move(){
+
+    if(i>=path.length){
+      showProcess();
+      return;
+    }
+
+    let p=path[i];
+    let n=path[i+1];
+
+    let cell=document.querySelector(`[data-r='${p[0]}'][data-c='${p[1]}']`);
+
+    if(cell){
+      let rect=cell.getBoundingClientRect();
+      plane.style.left=rect.left+window.scrollX+"px";
+      plane.style.top=rect.top+window.scrollY+"px";
+
+      if(!cell.classList.contains("start")&&!cell.classList.contains("end")){
+        cell.classList.add("path");
+      }
+    }
+
+    if(n){
+      let dr=n[0]-p[0];
+      let dc=n[1]-p[1];
+
+      if(dr===1)plane.style.transform="rotate(90deg)";
+      if(dr===-1)plane.style.transform="rotate(-90deg)";
+      if(dc===1)plane.style.transform="rotate(0deg)";
+      if(dc===-1)plane.style.transform="rotate(180deg)";
+    }
+
+    i++;
+    setTimeout(move, speed);
+  }
+
+  move();
+}
+
+/* final processing animation */
+function showProcess(){
+
+  let overlay=document.getElementById("overlay");
+  let box=document.getElementById("processBox");
+  let fill=document.getElementById("fill");
+  let text=document.getElementById("finalText");
+  let audio=document.getElementById("audioDone");
+
+  overlay.classList.add("show");
+  box.classList.add("show");
+
+  fill.style.width="0%";
+  text.style.opacity=0;
+
+  let p=0;
+
+  let int=setInterval(()=>{
+    p+=2;
+    fill.style.width=p+"%";
+
+    if(p>=100){
+      clearInterval(int);
+
+      audio.currentTime=0;
+      audio.play().catch(()=>{});
+
+      setTimeout(()=>{
+        text.style.opacity=1;
+
+        setTimeout(()=>{
+          box.classList.remove("show");
+          overlay.classList.remove("show");
+
+          document.getElementById("status").innerText="Route safe for travel";
+          running=false;
+
+        },900);
+
+      },300);
+    }
+
+  },16);
+}
+
+generate();
+
+</script>
+
+</body>
+</html>
